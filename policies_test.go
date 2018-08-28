@@ -14,12 +14,12 @@ import (
 )
 
 // Tests of the round-robin host selection policy implementation
-func TestRoundRobinHostPolicy(t *testing.T) {
+func TestHostPolicy_RoundRobin(t *testing.T) {
 	policy := RoundRobinHostPolicy()
 
 	hosts := [...]*HostInfo{
-		{hostId: "0", peer: net.IPv4(0, 0, 0, 1)},
-		{hostId: "1", peer: net.IPv4(0, 0, 0, 2)},
+		{hostId: "0", connectAddress: net.IPv4(0, 0, 0, 1)},
+		{hostId: "1", connectAddress: net.IPv4(0, 0, 0, 2)},
 	}
 
 	for _, host := range hosts {
@@ -53,7 +53,7 @@ func TestRoundRobinHostPolicy(t *testing.T) {
 
 // Tests of the token-aware host selection policy implementation with a
 // round-robin host selection policy fallback.
-func TestTokenAwareHostPolicy(t *testing.T) {
+func TestHostPolicy_TokenAware(t *testing.T) {
 	policy := TokenAwareHostPolicy(RoundRobinHostPolicy())
 
 	query := &Query{}
@@ -69,10 +69,10 @@ func TestTokenAwareHostPolicy(t *testing.T) {
 
 	// set the hosts
 	hosts := [...]*HostInfo{
-		{peer: net.IPv4(10, 0, 0, 1), tokens: []string{"00"}},
-		{peer: net.IPv4(10, 0, 0, 2), tokens: []string{"25"}},
-		{peer: net.IPv4(10, 0, 0, 3), tokens: []string{"50"}},
-		{peer: net.IPv4(10, 0, 0, 4), tokens: []string{"75"}},
+		{connectAddress: net.IPv4(10, 0, 0, 1), tokens: []string{"00"}},
+		{connectAddress: net.IPv4(10, 0, 0, 2), tokens: []string{"25"}},
+		{connectAddress: net.IPv4(10, 0, 0, 3), tokens: []string{"50"}},
+		{connectAddress: net.IPv4(10, 0, 0, 4), tokens: []string{"75"}},
 	}
 	for _, host := range hosts {
 		policy.AddHost(host)
@@ -80,13 +80,13 @@ func TestTokenAwareHostPolicy(t *testing.T) {
 
 	// the token ring is not setup without the partitioner, but the fallback
 	// should work
-	if actual := policy.Pick(nil)(); !actual.Info().Peer().Equal(hosts[0].peer) {
-		t.Errorf("Expected peer 0 but was %s", actual.Info().Peer())
+	if actual := policy.Pick(nil)(); !actual.Info().ConnectAddress().Equal(hosts[0].ConnectAddress()) {
+		t.Errorf("Expected peer 0 but was %s", actual.Info().ConnectAddress())
 	}
 
 	query.RoutingKey([]byte("30"))
-	if actual := policy.Pick(query)(); !actual.Info().Peer().Equal(hosts[1].peer) {
-		t.Errorf("Expected peer 1 but was %s", actual.Info().Peer())
+	if actual := policy.Pick(query)(); !actual.Info().ConnectAddress().Equal(hosts[1].ConnectAddress()) {
+		t.Errorf("Expected peer 1 but was %s", actual.Info().ConnectAddress())
 	}
 
 	policy.SetPartitioner("OrderedPartitioner")
@@ -94,28 +94,28 @@ func TestTokenAwareHostPolicy(t *testing.T) {
 	// now the token ring is configured
 	query.RoutingKey([]byte("20"))
 	iter = policy.Pick(query)
-	if actual := iter(); !actual.Info().Peer().Equal(hosts[1].peer) {
-		t.Errorf("Expected peer 1 but was %s", actual.Info().Peer())
+	if actual := iter(); !actual.Info().ConnectAddress().Equal(hosts[1].ConnectAddress()) {
+		t.Errorf("Expected peer 1 but was %s", actual.Info().ConnectAddress())
 	}
 	// rest are round robin
-	if actual := iter(); !actual.Info().Peer().Equal(hosts[2].peer) {
-		t.Errorf("Expected peer 2 but was %s", actual.Info().Peer())
+	if actual := iter(); !actual.Info().ConnectAddress().Equal(hosts[2].ConnectAddress()) {
+		t.Errorf("Expected peer 2 but was %s", actual.Info().ConnectAddress())
 	}
-	if actual := iter(); !actual.Info().Peer().Equal(hosts[3].peer) {
-		t.Errorf("Expected peer 3 but was %s", actual.Info().Peer())
+	if actual := iter(); !actual.Info().ConnectAddress().Equal(hosts[3].ConnectAddress()) {
+		t.Errorf("Expected peer 3 but was %s", actual.Info().ConnectAddress())
 	}
-	if actual := iter(); !actual.Info().Peer().Equal(hosts[0].peer) {
-		t.Errorf("Expected peer 0 but was %s", actual.Info().Peer())
+	if actual := iter(); !actual.Info().ConnectAddress().Equal(hosts[0].ConnectAddress()) {
+		t.Errorf("Expected peer 0 but was %s", actual.Info().ConnectAddress())
 	}
 }
 
 // Tests of the host pool host selection policy implementation
-func TestHostPoolHostPolicy(t *testing.T) {
+func TestHostPolicy_HostPool(t *testing.T) {
 	policy := HostPoolHostPolicy(hostpool.New(nil))
 
 	hosts := []*HostInfo{
-		{hostId: "0", peer: net.IPv4(10, 0, 0, 0)},
-		{hostId: "1", peer: net.IPv4(10, 0, 0, 1)},
+		{hostId: "0", connectAddress: net.IPv4(10, 0, 0, 0)},
+		{hostId: "1", connectAddress: net.IPv4(10, 0, 0, 1)},
 	}
 
 	// Using set host to control the ordering of the hosts as calling "AddHost" iterates the map
@@ -150,7 +150,7 @@ func TestHostPoolHostPolicy(t *testing.T) {
 	actualD.Mark(nil)
 }
 
-func TestRoundRobinNilHostInfo(t *testing.T) {
+func TestHostPolicy_RoundRobin_NilHostInfo(t *testing.T) {
 	policy := RoundRobinHostPolicy()
 
 	host := &HostInfo{hostId: "host-1"}
@@ -175,14 +175,14 @@ func TestRoundRobinNilHostInfo(t *testing.T) {
 	}
 }
 
-func TestTokenAwareNilHostInfo(t *testing.T) {
+func TestHostPolicy_TokenAware_NilHostInfo(t *testing.T) {
 	policy := TokenAwareHostPolicy(RoundRobinHostPolicy())
 
 	hosts := [...]*HostInfo{
-		{peer: net.IPv4(10, 0, 0, 0), tokens: []string{"00"}},
-		{peer: net.IPv4(10, 0, 0, 1), tokens: []string{"25"}},
-		{peer: net.IPv4(10, 0, 0, 2), tokens: []string{"50"}},
-		{peer: net.IPv4(10, 0, 0, 3), tokens: []string{"75"}},
+		{connectAddress: net.IPv4(10, 0, 0, 0), tokens: []string{"00"}},
+		{connectAddress: net.IPv4(10, 0, 0, 1), tokens: []string{"25"}},
+		{connectAddress: net.IPv4(10, 0, 0, 2), tokens: []string{"50"}},
+		{connectAddress: net.IPv4(10, 0, 0, 3), tokens: []string{"75"}},
 	}
 	for _, host := range hosts {
 		policy.AddHost(host)
@@ -198,8 +198,8 @@ func TestTokenAwareNilHostInfo(t *testing.T) {
 		t.Fatal("got nil host")
 	} else if v := next.Info(); v == nil {
 		t.Fatal("got nil HostInfo")
-	} else if !v.Peer().Equal(hosts[1].peer) {
-		t.Fatalf("expected peer 1 got %v", v.Peer())
+	} else if !v.ConnectAddress().Equal(hosts[1].ConnectAddress()) {
+		t.Fatalf("expected peer 1 got %v", v.ConnectAddress())
 	}
 
 	// Empty the hosts to trigger the panic when using the fallback.
@@ -219,10 +219,10 @@ func TestTokenAwareNilHostInfo(t *testing.T) {
 func TestCOWList_Add(t *testing.T) {
 	var cow cowHostList
 
-	toAdd := [...]net.IP{net.IPv4(0, 0, 0, 0), net.IPv4(1, 0, 0, 0), net.IPv4(2, 0, 0, 0)}
+	toAdd := [...]net.IP{net.IPv4(10, 0, 0, 1), net.IPv4(10, 0, 0, 2), net.IPv4(10, 0, 0, 3)}
 
 	for _, addr := range toAdd {
-		if !cow.add(&HostInfo{peer: addr}) {
+		if !cow.add(&HostInfo{connectAddress: addr}) {
 			t.Fatal("did not add peer which was not in the set")
 		}
 	}
@@ -234,7 +234,7 @@ func TestCOWList_Add(t *testing.T) {
 
 	set := make(map[string]bool)
 	for _, host := range hosts {
-		set[string(host.Peer())] = true
+		set[string(host.ConnectAddress())] = true
 	}
 
 	for _, addr := range toAdd {
@@ -300,4 +300,111 @@ func TestExponentialBackoffPolicy(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestDowngradingConsistencyRetryPolicy(t *testing.T) {
+
+	q := &Query{cons: LocalQuorum}
+
+	rewt0 := &RequestErrWriteTimeout{
+		Received:  0,
+		WriteType: "SIMPLE",
+	}
+
+	rewt1 := &RequestErrWriteTimeout{
+		Received:  1,
+		WriteType: "BATCH",
+	}
+
+	rewt2 := &RequestErrWriteTimeout{
+		WriteType: "UNLOGGED_BATCH",
+	}
+
+	rert := &RequestErrReadTimeout{}
+
+	reu0 := &RequestErrUnavailable{
+		Alive: 0,
+	}
+
+	reu1 := &RequestErrUnavailable{
+		Alive: 1,
+	}
+
+	// this should allow a total of 3 tries.
+	consistencyLevels := []Consistency{Three, Two, One}
+	rt := &DowngradingConsistencyRetryPolicy{ConsistencyLevelsToTry: consistencyLevels}
+	cases := []struct {
+		attempts  int
+		allow     bool
+		err       error
+		retryType RetryType
+	}{
+		{0, true, rewt0, Rethrow},
+		{3, true, rewt1, Ignore},
+		{1, true, rewt2, Retry},
+		{2, true, rert, Retry},
+		{4, false, reu0, Rethrow},
+		{16, false, reu1, Retry},
+	}
+
+	for _, c := range cases {
+		q.attempts = c.attempts
+		if c.retryType != rt.GetRetryType(c.err) {
+			t.Fatalf("retry type should be %v", c.retryType)
+		}
+		if c.allow && !rt.Attempt(q) {
+			t.Fatalf("should allow retry after %d attempts", c.attempts)
+		}
+		if !c.allow && rt.Attempt(q) {
+			t.Fatalf("should not allow retry after %d attempts", c.attempts)
+		}
+	}
+}
+
+func TestHostPolicy_DCAwareRR(t *testing.T) {
+	p := DCAwareRoundRobinPolicy("local")
+
+	hosts := [...]*HostInfo{
+		{hostId: "0", connectAddress: net.ParseIP("10.0.0.1"), dataCenter: "local"},
+		{hostId: "1", connectAddress: net.ParseIP("10.0.0.2"), dataCenter: "local"},
+		{hostId: "2", connectAddress: net.ParseIP("10.0.0.3"), dataCenter: "remote"},
+		{hostId: "3", connectAddress: net.ParseIP("10.0.0.4"), dataCenter: "remote"},
+	}
+
+	for _, host := range hosts {
+		p.AddHost(host)
+	}
+
+	// interleaved iteration should always increment the host
+	iterA := p.Pick(nil)
+	if actual := iterA(); actual.Info() != hosts[0] {
+		t.Errorf("Expected hosts[0] but was hosts[%s]", actual.Info().HostID())
+	}
+	iterB := p.Pick(nil)
+	if actual := iterB(); actual.Info() != hosts[1] {
+		t.Errorf("Expected hosts[1] but was hosts[%s]", actual.Info().HostID())
+	}
+	if actual := iterB(); actual.Info() != hosts[0] {
+		t.Errorf("Expected hosts[0] but was hosts[%s]", actual.Info().HostID())
+	}
+	if actual := iterA(); actual.Info() != hosts[1] {
+		t.Errorf("Expected hosts[1] but was hosts[%s]", actual.Info().HostID())
+	}
+	iterC := p.Pick(nil)
+	if actual := iterC(); actual.Info() != hosts[0] {
+		t.Errorf("Expected hosts[0] but was hosts[%s]", actual.Info().HostID())
+	}
+	p.RemoveHost(hosts[0])
+	if actual := iterC(); actual.Info() != hosts[1] {
+		t.Errorf("Expected hosts[1] but was hosts[%s]", actual.Info().HostID())
+	}
+	p.RemoveHost(hosts[1])
+	iterD := p.Pick(nil)
+	if actual := iterD(); actual.Info() != hosts[2] {
+		t.Errorf("Expected hosts[2] but was hosts[%s]", actual.Info().HostID())
+	}
+	if actual := iterD(); actual.Info() != hosts[3] {
+		t.Errorf("Expected hosts[3] but was hosts[%s]", actual.Info().HostID())
+	}
+
 }

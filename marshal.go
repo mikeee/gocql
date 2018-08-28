@@ -21,7 +21,8 @@ import (
 )
 
 var (
-	bigOne = big.NewInt(1)
+	bigOne     = big.NewInt(1)
+	emptyValue reflect.Value
 )
 
 var (
@@ -80,7 +81,7 @@ func Marshal(info TypeInfo, value interface{}) ([]byte, error) {
 		return marshalDouble(info, value)
 	case TypeDecimal:
 		return marshalDecimal(info, value)
-	case TypeTimestamp:
+	case TypeTimestamp, TypeTime:
 		return marshalTimestamp(info, value)
 	case TypeList, TypeSet:
 		return marshalList(info, value)
@@ -116,6 +117,7 @@ func Unmarshal(info TypeInfo, data []byte, value interface{}) error {
 	if v, ok := value.(Unmarshaler); ok {
 		return v.UnmarshalCQL(info, data)
 	}
+
 	if isNullableValue(value) {
 		return unmarshalNullable(info, data, value)
 	}
@@ -141,7 +143,7 @@ func Unmarshal(info TypeInfo, data []byte, value interface{}) error {
 		return unmarshalDouble(info, data, value)
 	case TypeDecimal:
 		return unmarshalDecimal(info, data, value)
-	case TypeTimestamp:
+	case TypeTimestamp, TypeTime:
 		return unmarshalTimestamp(info, data, value)
 	case TypeList, TypeSet:
 		return unmarshalList(info, data, value)
@@ -176,7 +178,7 @@ func isNullableValue(value interface{}) bool {
 }
 
 func isNullData(info TypeInfo, data []byte) bool {
-	return len(data) == 0
+	return data == nil
 }
 
 func unmarshalNullable(info TypeInfo, data []byte, value interface{}) error {
@@ -229,14 +231,14 @@ func unmarshalVarchar(info TypeInfo, data []byte, value interface{}) error {
 		*v = string(data)
 		return nil
 	case *[]byte:
-		var dataCopy []byte
 		if data != nil {
-			dataCopy = make([]byte, len(data))
-			copy(dataCopy, data)
+			*v = append((*v)[:0], data...)
+		} else {
+			*v = nil
 		}
-		*v = dataCopy
 		return nil
 	}
+
 	rv := reflect.ValueOf(value)
 	if rv.Kind() != reflect.Ptr {
 		return unmarshalErrorf("can not unmarshal into non-pointer %T", value)
@@ -329,7 +331,7 @@ func marshalSmallInt(info TypeInfo, value interface{}) ([]byte, error) {
 			return nil, marshalErrorf("marshal smallint: value %d out of range", v)
 		}
 		return encShort(int16(v)), nil
-	default:
+	case reflect.Ptr:
 		if rv.IsNil() {
 			return nil, nil
 		}
@@ -413,7 +415,7 @@ func marshalTinyInt(info TypeInfo, value interface{}) ([]byte, error) {
 			return nil, marshalErrorf("marshal tinyint: value %d out of range", v)
 		}
 		return []byte{byte(v)}, nil
-	default:
+	case reflect.Ptr:
 		if rv.IsNil() {
 			return nil, nil
 		}
@@ -485,7 +487,7 @@ func marshalInt(info TypeInfo, value interface{}) ([]byte, error) {
 			return nil, marshalErrorf("marshal int: value %d out of range", v)
 		}
 		return encInt(int32(v)), nil
-	default:
+	case reflect.Ptr:
 		if rv.IsNil() {
 			return nil, nil
 		}
@@ -1097,6 +1099,8 @@ func marshalTimestamp(info TypeInfo, value interface{}) ([]byte, error) {
 		}
 		x := int64(v.UTC().Unix()*1e3) + int64(v.UTC().Nanosecond()/1e6)
 		return encBigInt(x), nil
+	case time.Duration:
+		return encBigInt(v.Nanoseconds()), nil
 	}
 
 	if value == nil {
@@ -1128,7 +1132,10 @@ func unmarshalTimestamp(info TypeInfo, data []byte, value interface{}) error {
 		nsec := (x - sec*1000) * 1000000
 		*v = time.Unix(sec, nsec).In(time.UTC)
 		return nil
+	case *time.Duration:
+		*v = time.Duration(decBigInt(data))
 	}
+
 	rv := reflect.ValueOf(value)
 	if rv.Kind() != reflect.Ptr {
 		return unmarshalErrorf("can not unmarshal into non-pointer %T", value)
@@ -1595,12 +1602,11 @@ func marshalTuple(info TypeInfo, value interface{}) ([]byte, error) {
 	case unsetColumn:
 		return nil, unmarshalErrorf("Invalid request: UnsetValue is unsupported for tuples")
 	case []interface{}:
-		var buf []byte
-
 		if len(v) != len(tuple.Elems) {
 			return nil, unmarshalErrorf("cannont marshal tuple: wrong number of elements")
 		}
 
+		var buf []byte
 		for i, elem := range v {
 			data, err := Marshal(tuple.Elems[i], elem)
 			if err != nil {
@@ -1615,7 +1621,61 @@ func marshalTuple(info TypeInfo, value interface{}) ([]byte, error) {
 		return buf, nil
 	}
 
-	return nil, unmarshalErrorf("cannot marshal %T into %s", value, tuple)
+	rv := reflect.ValueOf(value)
+	t := rv.Type()
+	k := t.Kind()
+
+	switch k {
+	case reflect.Struct:
+		if v := t.NumField(); v != len(tuple.Elems) {
+			return nil, marshalErrorf("can not marshal tuple into struct %v, not enough fields have %d need %d", t, v, len(tuple.Elems))
+		}
+
+		var buf []byte
+		for i, elem := range tuple.Elems {
+			data, err := Marshal(elem, rv.Field(i).Interface())
+			if err != nil {
+				return nil, err
+			}
+
+			n := len(data)
+			buf = appendInt(buf, int32(n))
+			buf = append(buf, data...)
+		}
+
+		return buf, nil
+	case reflect.Slice, reflect.Array:
+		size := rv.Len()
+		if size != len(tuple.Elems) {
+			return nil, marshalErrorf("can not marshal tuple into %v of length %d need %d elements", k, size, len(tuple.Elems))
+		}
+
+		var buf []byte
+		for i, elem := range tuple.Elems {
+			data, err := Marshal(elem, rv.Index(i).Interface())
+			if err != nil {
+				return nil, err
+			}
+
+			n := len(data)
+			buf = appendInt(buf, int32(n))
+			buf = append(buf, data...)
+		}
+
+		return buf, nil
+	}
+
+	return nil, marshalErrorf("cannot marshal %T into %s", value, tuple)
+}
+
+func readBytes(p []byte) ([]byte, []byte) {
+	// TODO: really should use a framer
+	size := readInt(p)
+	p = p[4:]
+	if size < 0 {
+		return nil, p
+	}
+	return p[:size], p[size:]
 }
 
 // currently only support unmarshal into a list of values, this makes it possible
@@ -1631,14 +1691,68 @@ func unmarshalTuple(info TypeInfo, data []byte, value interface{}) error {
 	case []interface{}:
 		for i, elem := range tuple.Elems {
 			// each element inside data is a [bytes]
-			size := readInt(data)
-			data = data[4:]
+			var p []byte
+			p, data = readBytes(data)
 
-			err := Unmarshal(elem, data[:size], v[i])
+			err := Unmarshal(elem, p, v[i])
 			if err != nil {
 				return err
 			}
-			data = data[size:]
+		}
+
+		return nil
+	}
+
+	rv := reflect.ValueOf(value)
+	if rv.Kind() != reflect.Ptr {
+		return unmarshalErrorf("can not unmarshal into non-pointer %T", value)
+	}
+
+	rv = rv.Elem()
+	t := rv.Type()
+	k := t.Kind()
+
+	switch k {
+	case reflect.Struct:
+		if v := t.NumField(); v != len(tuple.Elems) {
+			return unmarshalErrorf("can not unmarshal tuple into struct %v, not enough fields have %d need %d", t, v, len(tuple.Elems))
+		}
+
+		for i, elem := range tuple.Elems {
+			m := readInt(data)
+			data = data[4:]
+
+			v := elem.New()
+			if err := Unmarshal(elem, data[:m], v); err != nil {
+				return err
+			}
+			rv.Field(i).Set(reflect.ValueOf(v).Elem())
+
+			data = data[m:]
+		}
+
+		return nil
+	case reflect.Slice, reflect.Array:
+		if k == reflect.Array {
+			size := rv.Len()
+			if size != len(tuple.Elems) {
+				return unmarshalErrorf("can not unmarshal tuple into array of length %d need %d elements", size, len(tuple.Elems))
+			}
+		} else {
+			rv.Set(reflect.MakeSlice(t, len(tuple.Elems), len(tuple.Elems)))
+		}
+
+		for i, elem := range tuple.Elems {
+			m := readInt(data)
+			data = data[4:]
+
+			v := elem.New()
+			if err := Unmarshal(elem, data[:m], v); err != nil {
+				return err
+			}
+			rv.Index(i).Set(reflect.ValueOf(v).Elem())
+
+			data = data[m:]
 		}
 
 		return nil
@@ -1760,18 +1874,11 @@ func unmarshalUDT(info TypeInfo, data []byte, value interface{}) error {
 			if len(data) == 0 {
 				return nil
 			}
-			size := readInt(data[:4])
-			data = data[4:]
 
-			var err error
-			if size < 0 {
-				err = v.UnmarshalUDT(e.Name, e.Type, nil)
-			} else {
-				err = v.UnmarshalUDT(e.Name, e.Type, data[:size])
-				data = data[size:]
-			}
+			var p []byte
+			p, data = readBytes(data)
 
-			if err != nil {
+			if err := v.UnmarshalUDT(e.Name, e.Type, p); err != nil {
 				return err
 			}
 		}
@@ -1801,20 +1908,13 @@ func unmarshalUDT(info TypeInfo, data []byte, value interface{}) error {
 			if len(data) == 0 {
 				return nil
 			}
-			size := readInt(data[:4])
-			data = data[4:]
 
 			val := reflect.New(goType(e.Type))
 
-			var err error
-			if size < 0 {
-				err = Unmarshal(e.Type, nil, val.Interface())
-			} else {
-				err = Unmarshal(e.Type, data[:size], val.Interface())
-				data = data[size:]
-			}
+			var p []byte
+			p, data = readBytes(data)
 
-			if err != nil {
+			if err := Unmarshal(e.Type, p, val.Interface()); err != nil {
 				return err
 			}
 
@@ -1829,22 +1929,22 @@ func unmarshalUDT(info TypeInfo, data []byte, value interface{}) error {
 		return unmarshalErrorf("cannot unmarshal %s into %T", info, value)
 	}
 
-	fields := make(map[string]reflect.Value)
-	t := k.Type()
-	for i := 0; i < t.NumField(); i++ {
-		sf := t.Field(i)
-
-		if tag := sf.Tag.Get("cql"); tag != "" {
-			fields[tag] = k.Field(i)
-		}
-	}
-
 	if len(data) == 0 {
 		if k.CanSet() {
 			k.Set(reflect.Zero(k.Type()))
 		}
 
 		return nil
+	}
+
+	t := k.Type()
+	fields := make(map[string]reflect.Value, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		sf := t.Field(i)
+
+		if tag := sf.Tag.Get("cql"); tag != "" {
+			fields[tag] = k.Field(i)
+		}
 	}
 
 	udt := info.(UDTTypeInfo)
@@ -1854,28 +1954,25 @@ func unmarshalUDT(info TypeInfo, data []byte, value interface{}) error {
 			return nil
 		}
 
-		size := readInt(data[:4])
-		data = data[4:]
+		var p []byte
+		p, data = readBytes(data)
 
-		var err error
-		if size >= 0 {
-			f, ok := fields[e.Name]
-			if !ok {
-				f = k.FieldByName(e.Name)
+		f, ok := fields[e.Name]
+		if !ok {
+			f = k.FieldByName(e.Name)
+			if f == emptyValue {
+				// skip fields which exist in the UDT but not in
+				// the struct passed in
+				continue
 			}
-
-			if !f.IsValid() || !f.CanAddr() {
-				return unmarshalErrorf("cannot unmarshal %s into %T: field %v is not valid", info, value, e.Name)
-			}
-
-			fk := f.Addr().Interface()
-			if err := Unmarshal(e.Type, data[:size], fk); err != nil {
-				return err
-			}
-			data = data[size:]
 		}
 
-		if err != nil {
+		if !f.IsValid() || !f.CanAddr() {
+			return unmarshalErrorf("cannot unmarshal %s into %T: field %v is not valid", info, value, e.Name)
+		}
+
+		fk := f.Addr().Interface()
+		if err := Unmarshal(e.Type, p, fk); err != nil {
 			return err
 		}
 	}
@@ -1955,6 +2052,17 @@ func (c CollectionType) String() string {
 type TupleTypeInfo struct {
 	NativeType
 	Elems []TypeInfo
+}
+
+func (t TupleTypeInfo) String() string {
+	var buf bytes.Buffer
+	buf.WriteString(fmt.Sprintf("%s(", t.typ))
+	for _, elem := range t.Elems {
+		buf.WriteString(fmt.Sprintf("%s, ", elem))
+	}
+	buf.Truncate(buf.Len() - 2)
+	buf.WriteByte(')')
+	return buf.String()
 }
 
 func (t TupleTypeInfo) New() interface{} {
